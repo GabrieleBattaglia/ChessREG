@@ -3,13 +3,13 @@
 # 10/11/2020, cambio nome in Chessreg
 # 28/06/2024 Spostato su Github
 
-import pickle, eta2, statistics
-from GBUtils import sonify, dgt, key
+import pickle, statistics
+from GBUtils import sonify, dgt, key, Vecchiume
 
 # Costanti
 VERSIONE = "4.8.4 di ottobre 2023."
-VETA=eta2.Vecchiume(2023,10,6,0,19)
-ETA=eta2.Vecchiume(2018,12,21,22,10)
+VETA=Vecchiume(2023,10,6,0,19)
+ETA=Vecchiume(2018,12,21,22,10)
 PRI1, PRI2, PRI3, PRI4 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',\
 												 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz',\
 												 '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz',\
