@@ -278,7 +278,7 @@ def Grafson(e):
 	q=dgt(f"Quanti ELO prendo in considerazione? (fra 3 e {len(e)}), (INVIO = Tutti) >", kind="i", imin=3, imax=len(e), default=len(e))
 	durgraf = dgt("Durata del grafico in secondi? ", kind="f", fmin=1.0, fmax=120.0, default=20.0)
 	print(f"Grafico sonoro degli ultimi {q} punteggi Elo.\n\tDurata del grafico sonoro: {durgraf:.1f} secondi.")
-	sonify(e[len(e)-q:len(e)], durgraf*1000, vol=0.3)
+	sonify(e[len(e)-q:len(e)], durgraf, vol=0.3)
 	return
 
 def Perc(x, y=100):
