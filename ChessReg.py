@@ -3,7 +3,8 @@
 # 10/11/2020, cambio nome in Chessreg
 # 28/06/2024 Spostato su Github
 
-import pickle, statistics
+import pickle
+import statistics
 from GBUtils import sonify, dgt, key, Vecchiume
 
 # Costanti
