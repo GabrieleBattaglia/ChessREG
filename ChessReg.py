@@ -3,15 +3,46 @@
 # 10/11/2020, cambio nome in Chessreg
 # 28/06/2024 Spostato su Github
 # 26/05/2026 Versione 5.0.0, migrazione a JSON, ottimizzazioni e accessibilità display Braille.
+# 02/09/2026 Versione 5.0.1, Vecchiume rimossa da GBUtils V92 e riportata qui in locale.
+# Autori: Gabriele Battaglia (IZ4APU) & ClaudIA (Claude Opus 5, modalita' auto)
 
 import json
 import os
 import pickle
 import statistics
-from GBUtils import sonify, dgt, key, Vecchiume
+from GBUtils import sonify, dgt, key
+
+
+def Vecchiume(y=1974, m=9, g=13, h=22, i=10):
+    """Restituisce quanto tempo e' passato dalla data indicata a ora.
+    V1.1 del 2 settembre 2026, versione locale dopo la rimozione da GBUtils V92.
+    Riceve anno, mese, giorno, ora e minuto e ne descrive a parole la distanza da adesso.
+    """
+    from datetime import datetime
+
+    from dateutil import relativedelta
+    quando = datetime(y, m, g, h, i)
+    eta = relativedelta.relativedelta(datetime.today(), quando)
+    parti = []
+    if eta.years > 0:
+        parti.append(f"{eta.years} anno" if eta.years == 1 else f"{eta.years} anni")
+    if eta.months > 0:
+        parti.append(f"{eta.months} mese" if eta.months == 1 else f"{eta.months} mesi")
+    if eta.days > 0:
+        parti.append(f"{eta.days} giorno" if eta.days == 1 else f"{eta.days} giorni")
+    if eta.hours > 0:
+        parti.append(f"{eta.hours} ora" if eta.hours == 1 else f"{eta.hours} ore")
+    if eta.minutes > 0:
+        parti.append(f"{eta.minutes} minuto" if eta.minutes == 1 else f"{eta.minutes} minuti")
+    if not parti:
+        return "pochi istanti"
+    if len(parti) == 1:
+        return parti[0]
+    return ", ".join(parti[:-1]) + " e " + parti[-1]
+
 
 # Costanti
-VERSIONE = "5.0.0 di maggio 2026."
+VERSIONE = "5.0.1 di settembre 2026."
 VETA = Vecchiume(2026, 5, 26, 8, 5)
 ETA = Vecchiume(2018, 12, 21, 22, 10)
 
