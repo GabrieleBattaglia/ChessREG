@@ -4,13 +4,16 @@
 # 28/06/2024 Spostato su Github
 # 26/05/2026 Versione 5.0.0, migrazione a JSON, ottimizzazioni e accessibilità display Braille.
 # 02/09/2026 Versione 5.0.1, Vecchiume rimossa da GBUtils V92 e riportata qui in locale.
+# 07/09/2026 Versione 6.0.0, revisione 1 dell'analisi del codice: archivio protetto,
+#            salvataggio atomico, statistiche corrette e messaggi accessibili.
 # Autori: Gabriele Battaglia (IZ4APU) & ClaudIA (Claude Opus 5, modalita' auto)
 
 import json
 import os
-import pickle
 import statistics
-from GBUtils import sonify, dgt, key
+import sys
+
+from GBUtils import dgt, key, sonify
 
 
 def Vecchiume(y=1974, m=9, g=13, h=22, i=10):
@@ -18,11 +21,12 @@ def Vecchiume(y=1974, m=9, g=13, h=22, i=10):
     V1.1 del 2 settembre 2026, versione locale dopo la rimozione da GBUtils V92.
     Riceve anno, mese, giorno, ora e minuto e ne descrive a parole la distanza da adesso.
     """
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     from dateutil import relativedelta
-    quando = datetime(y, m, g, h, i)
-    eta = relativedelta.relativedelta(datetime.today(), quando)
+    adesso = datetime.now(timezone.utc).astimezone()
+    quando = datetime(y, m, g, h, i, tzinfo=adesso.tzinfo)
+    eta = relativedelta.relativedelta(adesso, quando)
     parti = []
     if eta.years > 0:
         parti.append(f"{eta.years} anno" if eta.years == 1 else f"{eta.years} anni")
@@ -42,9 +46,16 @@ def Vecchiume(y=1974, m=9, g=13, h=22, i=10):
 
 
 # Costanti
-VERSIONE = "5.0.1 di settembre 2026."
-VETA = Vecchiume(2026, 5, 26, 8, 5)
-ETA = Vecchiume(2018, 12, 21, 22, 10)
+VERSIONE = "6.0.0"
+RELEASE_DATE = "7 settembre 2026"
+RELEASE_STAMP = (2026, 9, 7, 22, 30)
+NASCITA_STAMP = (2018, 12, 21, 22, 10)
+
+# Quanti valori servono come minimo per il grafico sonoro,
+# per la stringa DEA e per le statistiche Elo.
+MIN_GRAFICO = 3
+MIN_DEA = 5
+MIN_STATISTICHE = 6
 
 PRI1, PRI2, PRI3, PRI4 = (
     'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
@@ -66,29 +77,91 @@ IDX_VIT_NERO = 8
 IDX_PAT_NERO = 9
 IDX_SCO_NERO = 10
 
+# Tabella unica dei comandi del menu principale:
+# chiave digitata, descrizione parlata. E' l'unica fonte sia per il menu
+# stampato sia per il filtro dei comandi accettati.
+COMANDI = {
+    "dea": "Da Elo ad ASCII",
+    "edt": "Edita dati scacchiera",
+    "elo": "Modifica Elo registrati",
+    "gle": "Gestione liste Elo",
+    "gse": "Grafico sonoro degli Elo registrati",
+    "lst": "Vedi Elo",
+    "sca": "Gestione scacchiere",
+    "sgp": "Statistiche generali sulle partite",
+    "slv": "Salva il database su disco",
+    "ste": "Statistiche sui valori Elo registrati",
+    "?": "Rilegge questo menu",
+}
+
+# Voci che non sono comandi a tre lettere e vanno spiegate a parte.
+COMANDI_SPECIALI = {
+    "INVIO": "Esce dal programma",
+    "ESC": "Esce dal programma, come INVIO: ogni modifica e' gia' salvata",
+    ".parola": "Cerca la parola nei dati delle scacchiere",
+}
+
 # Variabili
 dizsch, dizelo = {}, {}
 elo = []
 contcom = 1
 salva = False
-acccom = ['slv', 'dea', 'edt', 'elo', 'gle', 'gse', 'lst', '?', 'sgp', 'sca', 'ste', '.', '', 'esc']
+acccom = [*COMANDI.keys(), "esc", ""]
 
-JSON_DB_PATH = "ChessReg.json"
-PICKLE_DB_PATH = "ChessReg.dat"
+# I percorsi sono ancorati alla cartella del programma, non a quella di lavoro,
+# cosi' l'archivio e' sempre lo stesso da qualunque cartella si avvii ChessReg.
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+JSON_DB_PATH = os.path.join(BASE_DIR, "ChessReg.json")
+BAK_DB_PATH = os.path.join(BASE_DIR, "ChessReg.json.bak")
+TMP_DB_PATH = os.path.join(BASE_DIR, "ChessReg.json.tmp")
 
 # qf
 def SalvaDB():
-    """Salva il db sul disco in formato JSON"""
+    """Salva il db sul disco in formato JSON.
+    Scrive prima su un file temporaneo e poi lo mette al posto
+    dell'archivio con os.replace, che e' atomico: se qualcosa va storto
+    l'archivio precedente resta intatto. Della versione sostituita
+    conserva una copia con estensione .bak.
+    Restituisce True se il salvataggio e' riuscito.
+    """
     data = {
         "dizsch": dizsch,
         "dizelo": dizelo
     }
     try:
-        with open(JSON_DB_PATH, "w", encoding="utf-8") as f:
+        with open(TMP_DB_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
-    except IOError as e:
+            f.flush()
+            os.fsync(f.fileno())
+        if os.path.exists(JSON_DB_PATH):
+            os.replace(JSON_DB_PATH, BAK_DB_PATH)
+        os.replace(TMP_DB_PATH, JSON_DB_PATH)
+    except OSError as e:
         print(f"Errore durante il salvataggio del database: {e}")
-    return
+        print("L'archivio precedente non e' stato toccato.")
+        return False
+    return True
+
+def Salvasubito():
+    """Registra sul disco la modifica appena fatta.
+    Se il salvataggio non riesce, lascia il lavoro in sospeso
+    cosi' che il comando SLV o l'uscita possano riprovarci.
+    """
+    global salva
+    salva = True
+    if SalvaDB():
+        salva = False
+
+def Elencosch():
+    """Restituisce i nomi delle scacchiere vere, senza la chiave di stato"""
+    return [k for k in dizsch if k != "active_sch"]
+
+def Elencoliste():
+    """Restituisce i nomi delle liste Elo vere, senza la chiave di stato"""
+    return [k for k in dizelo if k != "active_elo"]
 
 def Cercasch(chiave):
     """Riceve la chiave da cercare sia nelle chiavi che nei valori del dizionario scacchiere
@@ -102,9 +175,8 @@ def Cercasch(chiave):
             ris.append(k)
         elif isinstance(v, list):
             for j in v:
-                if isinstance(j, str) and chiave_lower in j.lower():
-                    if k not in ris:
-                        ris.append(k)
+                if isinstance(j, str) and chiave_lower in j.lower() and k not in ris:
+                    ris.append(k)
     return ris
 
 def Vedising(k):
@@ -126,18 +198,15 @@ def Vedising(k):
     ln += "Si trova in: " + dizsch[k][IDX_LUOGO] + "\n"
     ln += "Si gioca via: " + dizsch[k][IDX_MEZZO] + "\n"
     print(ln)
-    return
 
 def Vedisch():
-    print(f"\nArchivio scacchiere registrate ({len(dizsch)-1}).")
-    for k in dizsch.keys():
+    print(f"\nArchivio scacchiere registrate ({len(Elencosch())}).")
+    for k in dizsch:
         if k != "active_sch":
             Vedising(k)
-    return
 
 def Cancellasch():
-    global salva
-    if len(dizsch) == 2:
+    if len(Elencosch()) < 2:
         print("\nNon è possibile cancellare l'ultima scacchiera rimasta, l'archivio non può restare vuoto.")
         return
     print("Cancellazione di una delle scacchiere salvate.")
@@ -147,7 +216,7 @@ def Cancellasch():
     )
     s1 = Cercasch(chiave)
     if len(s1) == 0:
-        print(f"Nessuna delle {len(dizsch)-1} scacchiere presenti nell'archivio, contiene la chiave cercata.")
+        print(f"Nessuna delle {len(Elencosch())} scacchiere presenti nell'archivio, contiene la chiave cercata.")
         return
     elif len(s1) > 1:
         print(f"I risultati riportano {len(s1)} scacchiere. Prova ad usare chiavi diverse per ridurre il risultato ad una sola scacchiera")
@@ -161,15 +230,14 @@ def Cancellasch():
     if s == "s":
         print(f"\nOk, cancello la scacchiera {s1}.")
         del dizsch[s1[0]]
-        print(f"\nFatto, ora ci sono {len(dizsch)-1} scacchiere in archivio.")
-        salva = True
+        print(f"\nFatto, ora ci sono {len(Elencosch())} scacchiere in archivio.")
+        Salvasubito()
         return
     else:
         print("\nNo problem! Non tocco nulla.")
         return
 
 def Impostasch():
-    global salva
     print("Imposta la scacchiera attiva.")
     chiave = dgt(
         prompt="\nDigita una o più parole chiave da cercare nei dati della scacchiera> ",
@@ -182,7 +250,7 @@ def Impostasch():
             Vedising(j)
         return
     elif len(s1) == 0:
-        print(f"Nessuna delle {len(dizsch)-1} scacchiere presenti nell'archivio, contiene la chiave cercata.")
+        print(f"Nessuna delle {len(Elencosch())} scacchiere presenti nell'archivio, contiene la chiave cercata.")
         return
     elif s1[0] == dizsch["active_sch"]:
         print(f"\n{s1} è già la scacchiera attiva.")
@@ -190,11 +258,10 @@ def Impostasch():
     print(f"Imposto {s1[0]} come scacchiera attiva.")
     dizsch["active_sch"] = str(s1[0])
     print(f"Scacchiera {dizsch['active_sch']} attivata.")
-    salva = True
+    Salvasubito()
     return
 
 def Riscrivisch():
-    global salva
     print("Sovrascrivi alcuni dati di una delle tue scacchiere.")
     chiave = dgt(
         prompt="\nDigita una o più parole chiave da cercare nei dati della scacchiera> ",
@@ -207,16 +274,30 @@ def Riscrivisch():
             Vedising(j)
         return
     if len(s1) == 0:
-        print(f"Nessuna delle {len(dizsch)-1} scacchiere presenti nell'archivio, contiene la chiave cercata.")
+        print(f"Nessuna delle {len(Elencosch())} scacchiere presenti nell'archivio, contiene la chiave cercata.")
         return
     print(f"E' stata trovata la scacchiera {s1[0]}")
-    id_sch, nome = s1[0].split(":")
-    nid = dgt(prompt=f"Nuovo ID scacchiera: INVIO per accettare {id_sch} >", imin=1, imax=999, default=id_sch)
+    id_sch, nome = s1[0].split(":", maxsplit=1)
+    if id_sch.isdigit():
+        idpre = int(id_sch)
+    else:
+        idpre = 1
+    nid = dgt(prompt=f"Nuovo ID scacchiera: INVIO per accettare {idpre} >", kind="i", imin=1, imax=999, default=idpre)
     nnome = dgt(prompt=f"Nuovo nome: INVIO accetta {nome} >", smin=3, smax=128, default=nome)
+    nnome = nnome.replace(":", " ").strip()
+    if not nnome:
+        nnome = nome
     chiave = f"{nid}:{nnome.capitalize()}"
     if s1[0] != chiave:
-        print(f"Ok, rinomino {s1[0]} in {chiave}.")
-        dizsch[chiave] = dizsch.pop(s1[0])
+        if chiave in dizsch:
+            print(f"Esiste gia' una scacchiera {chiave}.")
+            print("Tengo il nome vecchio per non perderla.")
+            chiave = s1[0]
+        else:
+            print(f"Ok, rinomino {s1[0]} in {chiave}.")
+            dizsch[chiave] = dizsch.pop(s1[0])
+            if dizsch["active_sch"] == s1[0]:
+                dizsch["active_sch"] = chiave
     ndesc = dgt(
         f"\nNuova Descrizione/Nota? (INVIO) accetta {dizsch[chiave][IDX_DESC]}> ",
         smin=0, smax=4096, default=dizsch[chiave][IDX_DESC]
@@ -240,19 +321,21 @@ def Riscrivisch():
     print("Fatto!")
     dizsch["active_sch"] = chiave
     print(f"La scacchiera attiva è ora: {chiave}")
-    salva = True
+    Salvasubito()
     return
 
 def Aggiungisch():
-    global salva
     print("Aggiungi una nuova scacchiera.")
     idsch = 1
     while any(k.startswith(f"{idsch}:") for k in dizsch):
         idsch += 1
-    id_sch = dgt(prompt=f"ID Scacchiera, INVIO per accettare {idsch} >", imin=1, imax=999, default=idsch)
+    id_sch = dgt(prompt=f"ID Scacchiera, INVIO per accettare {idsch} >", kind="i", imin=1, imax=999, default=idsch)
     nb = dgt(prompt="Nome scacchiera: >", smin=3, smax=128, default="Generica")
+    nb = nb.replace(":", " ").strip()
+    if not nb:
+        nb = "Generica"
     chiave = f"{id_sch}:{nb.capitalize()}"
-    if chiave in dizsch.keys():
+    if chiave in dizsch:
         print("Questa scacchiera esiste già in archivio.")
         return
     desc = dgt(prompt="Descrizione, nota, situazione: >", smin=0, smax=4096, default="Nessuna descrizione")
@@ -268,17 +351,19 @@ def Aggiungisch():
     vps = [0, 0, 0, 0, 0, 0]
     scacchiera.extend(vps)
     dizsch[chiave] = scacchiera
-    print(f"Scacchiera creata! L'archivio ne contiene ora {len(dizsch)-1}.")
-    salva = True
+    print(f"Scacchiera creata! L'archivio ne contiene ora {len(Elencosch())}.")
+    Salvasubito()
     return
 
 def Gestsch(dizsch):
     """Gestione delle scacchiere
     riceve e restituisce il dizionario che le contiene"""
-    print(f"Gestione delle scacchiere registrate.\nCi sono {len(dizsch)-1} scacchiere salvate\n\t{dizsch['active_sch']} è la scacchiera attualmente selezionata.")
+    print(f"Gestione delle scacchiere registrate.\nCi sono {len(Elencosch())} scacchiere salvate\n\t{dizsch['active_sch']} è la scacchiera attualmente selezionata.")
     print("Menù: A Aggiungi, V Vedi, I Imposta, R Riscrivi, C Cancella, E Esci.")
     while True:
         s = key("Fai la tua scelta: AVIRCE> ", 60).lower()
+        if s in {"", "\x1b"}:
+            break
         if s == "v":
             Vedisch()
         elif s == "i":
@@ -296,44 +381,61 @@ def Gestsch(dizsch):
     print("\nTorno al menù principale.")
     return dizsch
 
+def Riparaattivi(dizsch, dizelo):
+    """Controlla che le due chiavi di stato indichino elementi esistenti.
+    Se non lo fanno le corregge in memoria, avvisando: e' una riparazione
+    silenziosa dello stato, mai una sostituzione dei dati.
+    """
+    schede = [k for k in dizsch if k != "active_sch"]
+    if dizsch.get("active_sch") not in schede:
+        if not schede:
+            return False
+        dizsch["active_sch"] = schede[0]
+        print(f"Scacchiera attiva non valida, attivo {schede[0]}.")
+    liste = [k for k in dizelo if k != "active_elo"]
+    if dizelo.get("active_elo") not in liste:
+        if not liste:
+            return False
+        dizelo["active_elo"] = liste[0]
+        print(f"Lista Elo attiva non valida, attivo {liste[0]}.")
+    return True
+
 def Loaddisco():
-    """Carica o crea il registro sul disco migrando da pickle a JSON se necessario"""
+    """Carica il registro dal disco, o ne crea uno nuovo se non esiste.
+    Se l'archivio esiste ma non si riesce a leggerlo, la funzione si ferma
+    e restituisce None senza scrivere niente: i dati sul disco restano
+    intatti e la decisione su cosa fare passa a Gabriele.
+    """
     print("Caricamento dati in corso...")
-    # 1. Prova a caricare da JSON
     if os.path.exists(JSON_DB_PATH):
         try:
             with open(JSON_DB_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
             dizsch = data["dizsch"]
             dizelo = data["dizelo"]
-            elo = dizelo[dizelo["active_elo"]]
-            print("   dati caricati da JSON.")
-            return dizsch, dizelo, elo
-        except Exception as e:
-            print(f"Errore nel caricamento del file JSON: {e}")
+        except (OSError, ValueError, KeyError) as e:
+            print("\nL'archivio esiste ma non si riesce a leggerlo.")
+            print(f"Motivo: {e}")
+            print(f"File: {JSON_DB_PATH}")
+            print("Non ho scritto niente: i dati sul disco")
+            print("sono rimasti come erano.")
+            if os.path.exists(BAK_DB_PATH):
+                print("C'e' una copia precedente in")
+                print(f"{BAK_DB_PATH}")
+                print("Per usarla, rinominala in ChessReg.json")
+                print("dopo aver messo al sicuro quella rotta.")
+            return None
+        if not Riparaattivi(dizsch, dizelo):
+            print("\nL'archivio e' stato letto ma non contiene")
+            print("nessuna scacchiera o nessuna lista Elo.")
+            print("Non ho scritto niente.")
+            return None
+        elo = dizelo[dizelo["active_elo"]]
+        print("   dati caricati dall'archivio.")
+        return dizsch, dizelo, elo
 
-    # 2. Fallback: Prova a caricare da Pickle
-    if os.path.exists(PICKLE_DB_PATH):
-        try:
-            with open(PICKLE_DB_PATH, "rb") as f:
-                dizsch = pickle.load(f)
-                dizelo = pickle.load(f)
-            elo = dizelo[dizelo["active_elo"]]
-            print("   dati caricati da Pickle legacy. Migrazione a JSON...")
-            # Effettua un salvataggio iniziale in formato JSON per completare la migrazione
-            data_to_save = {
-                "dizsch": dizsch,
-                "dizelo": dizelo
-            }
-            with open(JSON_DB_PATH, "w", encoding="utf-8") as f:
-                json.dump(data_to_save, f, ensure_ascii=False, indent=4)
-            print("   migrazione a JSON completata con successo.")
-            return dizsch, dizelo, elo
-        except Exception as e:
-            print(f"Errore nel caricamento del file Pickle legacy: {e}")
-
-    # 3. Creazione nuovo database se nessuno dei due esiste
-    print("...File database non trovato, creazione file in corso")
+    # L'archivio non esiste: si parte da zero.
+    print("Archivio non trovato, ne creo uno nuovo.")
     dizsch = {
         "1:Generica": [
             "Spero di vincere",
@@ -350,19 +452,6 @@ def Loaddisco():
         "Default": []
     }
     elo = dizelo[dizelo["active_elo"]]
-    
-    # Salva il nuovo database come JSON
-    data_to_save = {
-        "dizsch": dizsch,
-        "dizelo": dizelo
-    }
-    try:
-        with open(JSON_DB_PATH, "w", encoding="utf-8") as f:
-            json.dump(data_to_save, f, ensure_ascii=False, indent=4)
-        print("\nFile ChessReg.json, creato con successo.")
-    except IOError as e:
-        print(f"Errore nella creazione del database JSON: {e}")
-        
     return dizsch, dizelo, elo
 
 def Gestelo(elo, nelo):
@@ -375,29 +464,39 @@ def Gestelo(elo, nelo):
         print(f"\nL'Elo {nelo} non è mai stato registrato prima in questa lista.")
     else:
         print(f"\nL'elo inserito, {nelo}, compare altre {celo} volte, in questa lista.")
-    if len(elo) > 0:
+    lista_vuota = len(elo) == 0
+    if not lista_vuota:
         omed = statistics.mean(elo)
         elorange = max(elo) - min(elo)
         if len(elo) > 2 and elorange > 0:
-            print(f"Minimo / Valore inserito (posizionamento) / Massimo:\n\t{min(elo)} / {nelo}=({(nelo-min(elo)) * 100 / elorange:.3f}%) / {max(elo)}.")
+            print(f"Minimo: {min(elo)}.")
+            print(f"Massimo: {max(elo)}.")
+            print(f"Posizione del nuovo valore: {(nelo-min(elo)) * 100 / elorange:.1f}%.")
     else:
-        omed = 0
+        omed = 0.0
     elo.append(nelo)
     print("Nuovo ELO aggiunto.")
     nmed = statistics.mean(elo)
-    print(f"Variazione della media, prima / dopo / differenza:\n\t{omed:.3f} / {nmed:.3f} / {nmed-omed:.3f}")
+    if lista_vuota:
+        print(f"Primo valore della lista: {nelo}.")
+        print("Non c'e' ancora una variazione da")
+        print("confrontare.")
+    else:
+        print(f"Media prima: {omed:.3f}.")
+        print(f"Media adesso: {nmed:.3f}.")
+        print(f"Differenza: {nmed-omed:.3f}.")
     return elo
 
 def Grafson(e):
     """Seleziona un quantitativo degli ultimi elo registrati e produce un grafico sonoro"""
-    if len(e) > 5:
-        e = e.copy()[1:]
-    else:
-        print(f"La lista Elo contiene solo {len(e)} valori.\nTroppo pochi per produrre un grafico audio.")
+    if len(e) < MIN_GRAFICO:
+        print(f"La lista Elo contiene solo {len(e)} valori.")
+        print(f"Ne servono almeno {MIN_GRAFICO} per il grafico.")
         return
-    q = dgt(f"Quanti ELO prendo in considerazione? (fra 3 e {len(e)}), (INVIO = Tutti) >", kind="i", imin=3, imax=len(e), default=len(e))
+    q = dgt(f"Quanti ELO prendo in considerazione? (fra {MIN_GRAFICO} e {len(e)}), (INVIO = Tutti) >", kind="i", imin=MIN_GRAFICO, imax=len(e), default=len(e))
     durgraf = dgt("Durata del grafico in secondi? ", kind="f", fmin=1.0, fmax=120.0, default=20.0)
-    print(f"Grafico sonoro degli ultimi {q} punteggi Elo.\n\tDurata del grafico sonoro: {durgraf:.1f} secondi.")
+    print(f"Grafico sonoro degli ultimi {q} punteggi Elo.")
+    print(f"Durata: {durgraf:.1f} secondi.")
     sonify(e[len(e)-q:len(e)], durgraf, vol=0.3)
     return
 
@@ -408,22 +507,37 @@ def Perc(x, y=100):
     return (x * 100 / y)
 
 def Cercalista():
+    """Cerca una lista Elo per nome.
+    Se le corrispondenze sono piu' di una lo dice e le elenca,
+    restituendo stringa vuota: tocca a chi cerca precisare meglio.
+    """
     print("Digita il nome, o parte del nome, della lista da selezionare.")
-    s = dgt(prompt="> ", kind="s", smin=1, smax=20)
-    s1 = ""
-    for k, v in dizelo.items():
-        if s.lower() in k.lower():
-            s1 = k
-    return s1
+    s = dgt(prompt="> ", kind="s", smin=1, smax=20).lower()
+    trovate = [k for k in Elencoliste() if s in k.lower()]
+    if len(trovate) > 1:
+        print(f"Trovate {len(trovate)} liste con questa chiave.")
+        print("Precisa meglio. Ecco le liste trovate:")
+        for k in trovate:
+            print(f"- {k}, valori {len(dizelo[k])}.")
+        return ""
+    if len(trovate) == 1:
+        return trovate[0]
+    return ""
 
 def Rinominalista():
-    global salva
     print("Rinomina una delle tue liste Elo.")
     s1 = Cercalista()
-    if s1 == "" or s1 == "active_elo":
-        print(f"Nessuno dei {len(dizelo)-1} nomi di liste presenti nell'archivio salvato, contiene la chiave cercata.")
+    if not s1:
+        print("Nessuna lista scelta, non tocco nulla.")
         return
     nn = dgt(prompt="Nuovo nome: ", smin=3, smax=64)
+    if nn == s1:
+        print("Il nome e' lo stesso, non tocco nulla.")
+        return
+    if nn in dizelo:
+        print(f"Esiste gia' una lista {nn}.")
+        print("Scegli un nome diverso, non tocco nulla.")
+        return
     print(f"Ok, rinomino {s1} in {nn}.")
     dizelo[nn] = dizelo[s1]
     del dizelo[s1]
@@ -431,22 +545,22 @@ def Rinominalista():
         dizelo["active_elo"] = nn
         print(f"{nn} è la lista attiva.")
     print("Fatto!")
-    salva = True
+    Salvasubito()
     return
 
 def Impostalista():
     """sub di ActiveEloList"""
-    global elo, salva
+    global elo
     print("Imposta la lista Elo attiva.")
     s1 = Cercalista()
-    if s1 == "" or s1 == "active_elo":
-        print(f"Nessuno dei {len(dizelo)-1} nomi di liste presenti nell'archivio salvato, contiene la chiave cercata.")
+    if not s1:
+        print("Nessuna lista scelta, non tocco nulla.")
         return
     print(f"Imposto {s1} come lista attiva.")
     dizelo["active_elo"] = s1
     elo = dizelo[s1]
     print(f"Lista {s1} attivata, contiene {len(elo)} valori.")
-    salva = True
+    Salvasubito()
     return
 
 def Vediliste():
@@ -458,34 +572,31 @@ def Vediliste():
             if dizelo['active_elo'] == k:
                 ln += " (Lista attiva!)"
             print(ln)
-    return
 
 def Cancellalista():
-    global salva
-    if len(dizelo) == 2:
+    if len(Elencoliste()) < 2:
         print("\nNon è possibile cancellare l'ultima lista, l'archivio non può restare vuoto.")
         return
     print("Cancellazione di una delle liste Elo salvate.")
     s1 = Cercalista()
-    if s1 == "" or s1 == "active_elo":
-        print(f"Nessuno dei {len(dizelo)-1} nomi di liste presenti nell'archivio salvato, contiene la chiave cercata.")
+    if not s1:
+        print("Nessuna lista scelta, non tocco nulla.")
         return
     if s1 == dizelo["active_elo"]:
         print("\nNon è possibile eliminare la lista attiva, selezionarne una diversa, prima di procedere all'eliminazione.")
         return
-    s = key(f"Sicuro di voler cancellare {s1}? (S o N)? ", 180)
+    s = key(f"Sicuro di voler cancellare {s1}? (S o N)? ", 180).lower()
     if s == "s":
         print(f"Ok, cancello la lista {s1}.")
         del dizelo[s1]
-        print(f"Fatto, ora ci sono {len(dizelo)-1} liste in archivio.")
-        salva = True
+        print(f"Fatto, ora ci sono {len(Elencoliste())} liste in archivio.")
+        Salvasubito()
         return
     else:
         print("No problem! Non tocco nulla.")
         return
 
 def Aggiungilista():
-    global salva
     print("Aggiungi una nuova lista Elo.")
     n = dgt(prompt="Nome: ", smin=3, smax=64)
     idelo = 1
@@ -493,16 +604,17 @@ def Aggiungilista():
         idelo += 1
     n = f"{idelo}:{n}"
     dizelo[n] = []
-    print(f"Lista aggiunta. L'archivio ne contiene ora {len(dizelo)-1}.")
-    salva = True
-    return
+    print(f"Lista aggiunta. L'archivio ne contiene ora {len(Elencoliste())}.")
+    Salvasubito()
 
 def ActiveEloList():
     """Managing delle liste degli Elo    """
-    print(f"Gestione liste Elo.\nCi sono {len(dizelo)-1} liste salvate\n\t{dizelo['active_elo']} è la lista attualmente selezionata.")
+    print(f"Gestione liste Elo.\nCi sono {len(Elencoliste())} liste salvate\n\t{dizelo['active_elo']} è la lista attualmente selezionata.")
     print("Menù: A Aggiungi, V Vedi, I Imposta, R Rinomina, C Cancella, E Esci.")
     while True:
         s = key("Fai la tua scelta: AVIRCE> ", 60).lower()
+        if s in {"", "\x1b"}:
+            break
         if s == "v":
             Vediliste()
         elif s == "i":
@@ -518,7 +630,6 @@ def ActiveEloList():
         else:
             print("\nScelta non valida:\nA Aggiungi una lista nuova,\nV Vedi liste Elo;\nI Imposta la lista attiva;\nR Dai un nuovo nome alla lista;\nC Cancella la lista;\nE Esci e torna al menù principale.")
     print("\nTorno al menù principale.")
-    return
 
 def Statgen():
     print("Pagina di statistiche generali sulle partite registrate.")
@@ -547,42 +658,51 @@ def Statgen():
     print(f"Vittorie: col Bianco {Perc(tvitb,tvitb+tvitn):.2f}%, su {tvitb+tvitn} partite, contro il {Perc(tvitn,tvitb+tvitn):.2f}% col Nero.")
     print(f"Patte: col Bianco {Perc(tparb,tparb+tparn):.2f}%, su {tparb+tparn} partite, contro il {Perc(tparn,tparb+tparn):.2f}% col Nero.")
     print(f"Sconfitte: col Bianco {Perc(tscob,tscob+tscon):.2f}%, su {tscob+tscon} partite, contro il {Perc(tscon,tscob+tscon):.2f}% col Nero.")
-    return
 
 def Statelo(e):
-    e = e.copy()[1:]
-    if len(e) < 6:
+    """Statistiche sulla lista Elo ricevuta, calcolate su tutti i valori"""
+    if len(e) < MIN_STATISTICHE:
         print("Ancora pochi valori Elo registrati per produrre statistiche.")
+        print(f"Ne servono almeno {MIN_STATISTICHE}.")
         return
-    print("Pagina di statistiche sui valori registrati.")
-    print("Elaborazione effettuata su", len(e), "ELO salvati.")
-    print(min(e), "- - Valore minimo;")
-    print(statistics.median_low(e), "- - Valore media bassa;")
-    print("%4.2f - - Valore medio;" % statistics.mean(e))
-    print("%4.2f - - Valore mediana;" % statistics.median(e))
-    print("%4.1f - - Mediana a interpolazione;" % statistics.median_grouped(e, interval=1))
-    print(statistics.median_high(e), "- - Valore media alta;")
-    print(max(e), "- - Valore massimo;")
-    print("%8.3f - - Dispersione dal punto mediano;" % statistics.pvariance(e, mu=None))
+    print("Statistiche sui valori registrati.")
+    print(f"Valori elaborati: {len(e)}.")
+    print(f"Minimo: {min(e)}.")
+    print(f"Media bassa: {statistics.median_low(e)}.")
+    print(f"Valore medio: {statistics.mean(e):.2f}.")
+    print(f"Mediana: {statistics.median(e):.2f}.")
+    print(f"Mediana interpolata: {statistics.median_grouped(e, interval=1):.1f}.")
+    print(f"Media alta: {statistics.median_high(e)}.")
+    print(f"Massimo: {max(e)}.")
+    print(f"Dispersione: {statistics.pvariance(e, mu=None):.3f}.")
     return
 
 def Daeloascii(e):
     """Trasforma i valori ELO in una stringa per leggerne l'andamento"""
-    if len(e) < 5:
-        print("Non ci sono abbastanza ELO salvati per poter effettuare questo calcolo,\n\tRiprovare dopo aver aggiunto almeno 5 valori.")
+    if len(e) < MIN_DEA:
+        print("Non ci sono abbastanza ELO salvati")
+        print("per effettuare questo calcolo.")
+        print(f"Riprova con almeno {MIN_DEA} valori.")
         return
-    print("Da ELO ad ASCII.\nQuesta funzione trasforma tutti i valori salvati nella lista ELO, in una stringa di caratteri.\nQuesta stringa parte da 0, il carattere con valore più basso, e sale fino al\n proprio valore più alto, Z o z, a seconda della stringa di riferimento scelta.")
-    print("Ci sono 4 diversi modelli di stringhe, su cui effettuare la proiezione,\n\teccole in ordine ascendente di risoluzione:")
-    print("1, - Solo gruppo maiuscole, risoluzione 26 valori:\n\t- " + PRI1 + " -")
-    print("2, - Gruppi maiuscole più minuscole, risoluzione 52 valori:\n\t- " + PRI2 + " -")
-    print("3, - Gruppi numeri, maiuscole e minuscole, risoluzione 62 valori:\n\t- " + PRI3 + " -")
-    print("4, - Gruppi numeri più simboli, maiuscole e minuscole, risoluzione 78 valori:\n\t- " + PRI4 + " -")
+    print("Da ELO ad ASCII.")
+    print("Trasforma i valori della lista Elo")
+    print("in una stringa di caratteri.")
+    print("La stringa parte dal carattere piu' basso")
+    print("e sale fino al piu' alto della tabella")
+    print("di riferimento che sceglierai.")
+    print("Ci sono 4 tabelle, in ordine di risoluzione")
+    print("crescente.")
+    print("1, solo maiuscole, risoluzione 26.")
+    print("2, maiuscole e minuscole, risoluzione 52.")
+    print("3, numeri, maiuscole e minuscole,")
+    print("   risoluzione 62.")
+    print("4, numeri, simboli, maiuscole e minuscole,")
+    print("   risoluzione 78.")
     while True:
         q = key("Quale vuoi usare, 1 2 3 o 4? ", 30)
-        if q in ['1', '2', '3', '4']:
+        if q in {"1", "2", "3", "4"}:
             break
-        else:
-            print("Risposta non valida. Inserisci un numero da 1 a 4.")
+        print("Risposta non valida. Inserisci un numero da 1 a 4.")
     if q == "1":
         pri, pridiv = PRI1, len(PRI1)
     elif q == "2":
@@ -591,34 +711,26 @@ def Daeloascii(e):
         pri, pridiv = PRI3, len(PRI3)
     elif q == "4":
         pri, pridiv = PRI4, len(PRI4)
-    emin = 4000
-    emax = -1
-    econt = 0
-    q = dgt("Quanti ELO prendo in considerazione? (invio uguale tutti)", kind="i", imin=5, imax=len(e), default=len(e))
-    if q < 5:
-        q = 5
-    print("Elaboro gli ultimi", q, "punteggi ELO inseriti:")
+    q = dgt("Quanti ELO prendo in considerazione? (invio uguale tutti)", kind="i", imin=MIN_DEA, imax=len(e), default=len(e))
+    print(f"Elaboro gli ultimi {q} punteggi Elo.")
     e = e[len(e)-q:len(e)]
-    for j in e:
-        if j < emin:
-            emin = j
-        if j > emax:
-            emax = j
-        econt += j
-    emed = int(econt / len(e))
-    print("L'ELO", emin, "è il più basso")
-    print("Il valore approssimativo", emed, "rappresenta la media")
-    print("L'ELO", emax, "è il più alto")
+    emin, emax = min(e), max(e)
+    emed = int(sum(e) / len(e))
+    print(f"Valore piu' basso: {emin}.")
+    print(f"Media approssimata: {emed}.")
+    print(f"Valore piu' alto: {emax}.")
     eran = emax - emin
-    print("Il valore", eran, "rappresenta la varianza coperta dagli ELO elaborati.")
-    print("Stringa ASCII di riferimento, risoluzione", len(pri), ":\n- " + pri + " -")
+    print(f"Escursione coperta: {eran}.")
+    print(f"Tabella scelta, risoluzione {len(pri)}:")
+    print(pri)
     dea = ""
     for j in e:
         x = j - emin
         y = x * 100 / eran if eran > 0 else 0.0
         w = y / 100 * (pridiv - 1)
         dea += pri[round(w)]
-    print("Stringa DEA elaborata:\n- " + dea + " -")
+    print("Stringa DEA elaborata:")
+    print(dea)
     return
 
 def Vedie(e):
@@ -627,14 +739,12 @@ def Vedie(e):
         print("Non ci sono ancora punteggi registrati.")
         return
     q = dgt("Visualizza gli ultimi elo salvati.\n\tQuanti ne vuoi vedere? (INVIO = ultimi 15)> ", kind="i", imax=len(e), imin=1, default=15)
-    if q > len(e):
-        q = len(e)
     print(f"\nLista degli ultimi {q} punteggi Elo inseriti:")
     for j in range(len(e)-q, len(e)):
         if j >= 1:
-            lelo = f" - {j+1}: {e[j]} --- ({e[j]-e[j-1]});"
+            lelo = f"{j+1}: {e[j]}, variazione {e[j]-e[j-1]}."
         else:
-            lelo = f" - {j+1}: {e[j]} --- (N/D);"
+            lelo = f"{j+1}: {e[j]}, primo valore."
         print(lelo)
     return
 
@@ -649,38 +759,57 @@ def Vedis(m):
     print(" - Giochi con " + c)
     print(" - Hai: " + str(m[IDX_VIT_BIANCO]) + " vittorie, " + str(m[IDX_PAT_BIANCO]) + " patte e " + str(m[IDX_SCO_BIANCO]) + " sconfitte, col Bianco;")
     print(" - Hai: " + str(m[IDX_VIT_NERO]) + " vittorie, " + str(m[IDX_PAT_NERO]) + " patte e " + str(m[IDX_SCO_NERO]) + " sconfitte, col Nero.")
-    return
 
 def Modelo(elo):
     """aggiunge o toglie elo dalla lista attiva"""
-    global salva
     prompt1 = f"Modifica lista ELO\n(1) Aggiunge, (2) applica una modifica all'ultimo valore, oppure (3) per rimuovere l'ultimo inserito.\n\tCi sono {len(elo)} valori attualmente registrati, cosa vuoi fare, 1, 2, 3? "
     while True:
         s = key(prompt1, 60)
-        if s in "123":
+        if s in {"1", "2", "3"}:
             break
-        else:
-            print("Rispondi 1 per aggiungere valori, 2 per aggiungere un valore all'ultimo registrato o 3 per rimuovere l'ultimo inserito.")
+        if s in {"", "\x1b"}:
+            print("Nessuna scelta fatta, non tocco la lista.")
+            return elo
+        print("Rispondi 1 per aggiungere valori, 2 per aggiungere un valore all'ultimo registrato o 3 per rimuovere l'ultimo inserito.")
     if s == "2":
+        if not elo:
+            print("La lista e' vuota, non c'e' nessun")
+            print("ultimo valore da modificare.")
+            return elo
         uelo = elo[-1]
         nelo = uelo + dgt(kind="i", prompt=f"\nInserire la variazione da applicare a {uelo} > ", imin=-1000, imax=1000)
         elo = Gestelo(elo, nelo)
-        salva = True
+        Salvasubito()
         return elo
     elif s == "1":
         nelo = dgt(kind="i", prompt="\nNuovo valore Elo? ", imin=500, imax=5000)
         elo = Gestelo(elo, nelo)
-        salva = True
+        Salvasubito()
         return elo
     else:
+        if not elo:
+            print("La lista e' vuota, non c'e' niente")
+            print("da rimuovere.")
+            return elo
         rim = elo.pop()
-        print("Rimosso: ", rim)
-        salva = True
+        print(f"Rimosso il valore {rim}.")
+        Salvasubito()
         return elo
+
+def Fineparita(attiva):
+    """Chiede se la partita e' finita e, se lo e', libera l'avversario.
+    La descrizione, che e' una nota scritta a mano, non viene mai toccata.
+    """
+    r = key("Partita finita? Libero l'avversario? (S o N)> ", 30).lower()
+    if r == "s":
+        dizsch[attiva][IDX_AVVERSARIO] = "Nessuno"
+        print("Avversario azzerato, scacchiera libera.")
+        print("La descrizione e' rimasta com'era.")
+    else:
+        print("Avversario lasciato com'era.")
 
 def Edit():
     """Modifica avversario, colore e contatori della scacchiera attiva"""
-    global salva  
     attiva = dizsch["active_sch"]
     print("Modifica alcuni dati della scacchiera attiva.")
     while True:
@@ -688,100 +817,94 @@ def Edit():
         ln += dizsch[attiva][IDX_AVVERSARIO] + " col "
         if dizsch[attiva][IDX_COLORE]:
             p = "Bianco"
-            ln += p
             delta = 0
         else:
             p = "Nero"
-            ln += p
             delta = 3
+        ln += p
         prt = (
             dizsch[attiva][IDX_VIT_BIANCO] + dizsch[attiva][IDX_PAT_BIANCO] + dizsch[attiva][IDX_SCO_BIANCO] +
             dizsch[attiva][IDX_VIT_NERO] + dizsch[attiva][IDX_PAT_NERO] + dizsch[attiva][IDX_SCO_NERO]
         )
         ln += f" {prt} Partite."
-        print(f"\n{ln}\nCol {p} ci sono {dizsch[attiva][5+delta]} vittorie, {dizsch[attiva][6+delta]} patte e {dizsch[attiva][7+delta]} sconfitte.\n")
-        s = key("Quale dato vuoi cambiare:\nA per l'avversario, C per il colore, D per la Descrizione oppure\nV di Vittorie, P di Patte o S di Sconfitte?\n ESC per uscire.> ", 300)
+        print(f"\n{ln}")
+        print(f"Col {p}: {dizsch[attiva][5+delta]} vittorie,")
+        print(f"{dizsch[attiva][6+delta]} patte,")
+        print(f"{dizsch[attiva][7+delta]} sconfitte.")
+        s = key("Quale dato vuoi cambiare:\nA per l'avversario, C per il colore, D per la Descrizione oppure\nV di Vittorie, P di Patte o S di Sconfitte?\n ESC per uscire.> ", 300).lower()
+        if s in {"\x1b", ""}:
+            break
         if s == "a":
             dizsch[attiva][IDX_AVVERSARIO] = dgt(prompt="\nAvversario: >", smin=0, smax=128, default="Un cattivone!")
-            salva = True
+            Salvasubito()
         elif s == "d":
             dizsch[attiva][IDX_DESC] = dgt(prompt="\nDesc./Nota? >", smin=0, smax=2048, default="Nessuna nota.")
-            salva = True
+            Salvasubito()
         elif s == "c":
+            dizsch[attiva][IDX_COLORE] = not dizsch[attiva][IDX_COLORE]
             if dizsch[attiva][IDX_COLORE]:
-                dizsch[attiva][IDX_COLORE] = False
-                print("\nColore impostato a Nero.")
-                delta = 3
-                salva = True
-            else:
-                dizsch[attiva][IDX_COLORE] = True
                 print("\nColore impostato a Bianco.")
-                delta = 0
-                salva = True
+            else:
+                print("\nColore impostato a Nero.")
+            Salvasubito()
         elif s == "v":
             v = dgt("\nModifica numero vittorie, digita il valore da aggiungere: (INVIO = +1)> ", kind="i", imin=-5, imax=5, default=1)
             dizsch[attiva][5+delta] += v
-            dizsch[attiva][IDX_DESC] = "Libera"
-            dizsch[attiva][IDX_AVVERSARIO] = "Nessuno"
-            salva = True
+            Fineparita(attiva)
+            Salvasubito()
         elif s == "p":
-            v = dgt("\nModifica numero patte, digita il valore da aggiungere: (INVIO = +1> ", kind="i", imin=-5, imax=5, default=1)
+            v = dgt("\nModifica numero patte, digita il valore da aggiungere: (INVIO = +1)> ", kind="i", imin=-5, imax=5, default=1)
             dizsch[attiva][6+delta] += v
-            dizsch[attiva][IDX_DESC] = "Libera"
-            dizsch[attiva][IDX_AVVERSARIO] = "Nessuno"
-            salva = True
+            Fineparita(attiva)
+            Salvasubito()
         elif s == "s":
-            v = dgt("\nModifica numero sconfitte, digita il valore da aggiungere: (INVIO = +1> ", kind="i", imin=-5, imax=5, default=1)
+            v = dgt("\nModifica numero sconfitte, digita il valore da aggiungere: (INVIO = +1)> ", kind="i", imin=-5, imax=5, default=1)
             dizsch[attiva][7+delta] += v
-            dizsch[attiva][IDX_DESC] = "Libera"
-            dizsch[attiva][IDX_AVVERSARIO] = "Nessuno"
-            salva = True
-        elif ord(s) == 27:
-            break
+            Fineparita(attiva)
+            Salvasubito()
         else:
-            print(f"\n{s} non è un comando valido. Digita A, C, V, P, S oppure ESC.")
+            print(f"\n{s} non è un comando valido. Digita A, C, D, V, P, S oppure ESC.")
     print("\n")
-    return
 
 def Menu():
-    """Visualizza il menù"""
-    print("\nMenù dell'applicazione ChessReg\n")
-    print("   ( DEA ) Da Elo ad ASCII;")
-    print("   ( EDT ) Edita dati scacchiera;")
-    print("   ( ELO ) Modifica Elo registrati;")
-    print("   ( GLE ) Gestione Liste Elo;")
-    print("   ( GSE ) Grafico Sonoro degli Elo registrati;")
-    print("   ( LST ) Vedi Elo;")
-    print("   (  ?  ) Visualizza il Menù;")
-    print("   ( SCA ) Gestione scacchiere;")
-    print("   ( SGP ) Statistiche Generali sulle partite;")
-    print("   ( SLV ) Salva il database su disco;")
-    print("   ( STE ) Statistiche sui valori Elo registrati;")
-    print("   (INVIO) Uscita dal programma;")
-    print("   ( ESC ) Uscita dal programma senza salvare;")
-    print("   ( .***) Cerca nei dati delle scacchiere;")
-    return
+    """Visualizza il menu, ricavandolo dalla tabella unica dei comandi"""
+    print("\nMenu dell'applicazione ChessReg")
+    for k, v in COMANDI.items():
+        print(f"{k.upper()}, {v}.")
+    for k, v in COMANDI_SPECIALI.items():
+        print(f"{k}, {v}.")
 
 def main():
     global dizsch, dizelo, elo, contcom, salva
-    print(f"\nBenvenuto in ChessReg di Gabriele Battaglia, Versione {VERSIONE}\n")
-    print(f"Questa applicazione ha {ETA} fa.")
-    print(f"L'ultima versione è di {VETA} fa.")
-    print("Questa applicazione è un registro utile a tenere traccia dei risultati\n  ottenuti sulle mie scacchiere con cui gioco a scacchi online.\n\tSalva anche un numero illimitato di liste Elo.")
+    print("\nBenvenuto in ChessReg di Gabriele Battaglia.")
+    print(f"Versione {VERSIONE} del {RELEASE_DATE}.")
+    print(f"Questa applicazione e' nata {Vecchiume(*NASCITA_STAMP)} fa.")
+    print(f"Questa versione e' uscita {Vecchiume(*RELEASE_STAMP)} fa.")
+    print("E' un registro dei risultati ottenuti sulle")
+    print("scacchiere con cui gioco a scacchi online,")
+    print("e tiene anche le liste dei punteggi Elo.")
 
-    dizsch, dizelo, elo = Loaddisco()
+    archivio_nuovo = not os.path.exists(JSON_DB_PATH)
+    dati = Loaddisco()
+    if dati is None:
+        print("\nChessReg si ferma qui per non rischiare")
+        print("di rovinare l'archivio. Ciao ciao.")
+        return
+    dizsch, dizelo, elo = dati
+    if archivio_nuovo:
+        Salvasubito()
+        print("Nuovo archivio creato e salvato.")
 
-    print("I comandi del menù vanno confermati con invio.\n\t(punto interrogativo) per visualizzare il Menù, un (INVIO) a vuoto per uscire.")
+    print("I comandi vanno confermati con INVIO.")
+    print("Punto interrogativo per il menu,")
+    print("INVIO a vuoto per uscire.")
 
     while True:
         s = dgt(f"[{contcom}] comandi signore: ", kind="s", smin=0, smax=16)
         s = s.lower()
         if s in acccom or (s and s[0] == "."):
             contcom += 1
-            if s == "":
-                break
-            elif s == "esc":
-                salva = False
+            if s in {"", "esc"}:
                 break
             elif s == "?":
                 Menu()
@@ -789,16 +912,18 @@ def main():
                 Edit()
             elif s == "elo":
                 elo = Modelo(elo)
+                dizelo[dizelo["active_elo"]] = elo
             elif s == "slv":
                 if salva:
-                    SalvaDB()
-                    print("\nDB salvato!")
-                    salva = False
+                    if SalvaDB():
+                        print("\nDB salvato!")
+                        salva = False
                 else:
                     print("\nSalvataggio non necessario.")
                     contcom -= 1
             elif s == "gle":
                 ActiveEloList()
+                elo = dizelo[dizelo["active_elo"]]
             elif s == "gse":
                 Grafson(elo)
             elif s == "ste":
@@ -819,8 +944,8 @@ def main():
                     print(f"{s[1:]} non è presente nei dati delle scacchiere registrate.")
                 if len(chiave) == 1:
                     dizsch["active_sch"] = str(chiave[0])
-                    print(f"{str(chiave[0])} è ora la scacchiera attiva.")
-                    salva = True
+                    print(f"{chiave[0]} è ora la scacchiera attiva.")
+                    Salvasubito()
             elif s == "lst":
                 Vedie(elo)
         else:
@@ -828,11 +953,14 @@ def main():
 
     # Chiusura
     if salva:
-        SalvaDB()
-        print("Dati aggiornati salvati con successo.")
+        if SalvaDB():
+            print("Dati aggiornati salvati con successo.")
+        else:
+            print("Attenzione: modifiche non salvate.")
     else:
-        print("Nessuna modifica apportata. Salvataggio non necessario.")
-    print("Grazie per avermi usato!\nCiao ciao.")
+        print("Tutto gia' salvato sul disco.")
+    print("Grazie per avermi usato!")
+    print("Ciao ciao.")
 
 if __name__ == "__main__":
     main()
